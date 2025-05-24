@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fragmentshot"
+version = "0.1.0"
+description = "Prompt generation for Fragment-Shot and Pivoted Fragment-Shot translation using LLMs"
+authors = [{ name="Samuel Frontull", email="samuel.frontull@uibk.ac.at" }]
+license = { text = "MIT" }
+readme = "README.md"
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/XXX"
