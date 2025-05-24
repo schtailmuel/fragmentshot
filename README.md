@@ -31,18 +31,18 @@ pip install -e .
 from fragmentshot.retriever import FragmentShotsRetriever
 
 src_texts = [
-    "This is a sample source sentence.",
-    "Another example source sentence."
+    "this is a sample source sentence.",
+    "another example source sentence."
 ]
 
 tgt_texts = [
-    "Dies ist ein Beispiel im Zieltext.",
-    "Noch ein Beispiel."
+    "dies ist ein Beispiel im Zieltext.",
+    "noch ein Beispiel."
 ]
 
-result = FragmentShotsRetriever(src_texts, tgt_texts, max_fragment_size=5, overlaps=False)
+retriever = FragmentShotsRetriever(src_texts, tgt_texts, max_fragment_size=5, overlaps=False)
 
-# Access extracted shots
+result = retriever.get_fragment_shots("The source of this is unknown.")
 print(result)
 ```
 
