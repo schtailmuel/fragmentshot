@@ -14,7 +14,7 @@ A Python package for retrieving exemplary translations for text based on fragmen
 You can install this package locally:
 
 ```bash
-pip install .
+pip install fragmentshot
 ```
 
 Or clone the repo and install in editable mode:
