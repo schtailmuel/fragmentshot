@@ -6,12 +6,13 @@ class TestFragmentShotsRetriever(unittest.TestCase):
     @classmethod
     def setUp(self):
         self.src_texts = [
-            "The cat sleeps on the couch",
-            "A dog runs in the garden"
+            "this is a sample source sentence.",
+            "another example source sentence."
         ]
+
         self.tgt_texts = [
-            "Il gatto dorme sul divano",
-            "Un cane corre nel giardino"
+            "dies ist ein Beispiel im Zieltext.",
+            "noch ein Beispiel."
         ]
 
     def test_constructor_with_valid_input(self):
@@ -34,10 +35,11 @@ class TestFragmentShotsRetriever(unittest.TestCase):
         self.assertEqual(len(retriever.corpus_fragments_str[3]), len(retriever.corpus_fragments_idx[3]))
 
     def test_retrieve(self):
-        input_sentence = "my dogs sleeps on the floow"
+        input_sentence = "The source of this is unknown."
         retriever = FragmentShotsRetriever(self.src_texts, self.tgt_texts)
         results = retriever.get_fragment_shots(input_sentence)
-        self.assertEqual(len(results['shots']), 1)
+        self.assertEqual(len(results['shots']), 2)
+        self.assertEqual(results['shots'][0]['fragment'], "source")
 
 if __name__ == "__main__":
     unittest.main()

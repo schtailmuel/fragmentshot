@@ -52,15 +52,7 @@ print(result)
 {
   "shots": [
     {
-      "fragment": "this is",
-      "examples": [
-        {
-          "src_text": "this is a sample source sentence.",
-          "tgt_text": "dies ist ein Beispiel im Zieltext."
-        }
-      ]
-    },
-    {
+      "index": 1,
       "fragment": "source",
       "examples": [
         {
@@ -70,6 +62,16 @@ print(result)
         {
           "src_text": "another example source sentence.",
           "tgt_text": "noch ein Beispiel."
+        }
+      ]
+    },
+    {
+      "index": 3,
+      "fragment": "this is",
+      "examples": [
+        {
+          "src_text": "this is a sample source sentence.",
+          "tgt_text": "dies ist ein Beispiel im Zieltext."
         }
       ]
     }

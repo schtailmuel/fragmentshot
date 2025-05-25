@@ -94,6 +94,7 @@ class FragmentShotsRetriever:
 
                     shots.append(
                         {
+                            "index": f_idx,
                             "fragment": " ".join(fragment),
                             "examples": examples
                         }
@@ -102,6 +103,8 @@ class FragmentShotsRetriever:
                     for j in range(f_idx, f_idx + size):
                         text_tokenized[j] = "#"
                         wi_marked.append(j)
+
+        shots = sorted(shots, key=lambda x: x["index"])
 
         return {
             "shots": shots,
