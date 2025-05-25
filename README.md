@@ -46,6 +46,43 @@ result = retriever.get_fragment_shots("The source of this is unknown.")
 print(result)
 ```
 
+**Result**
+
+```json
+{
+  "shots": [
+    {
+      "fragment": "this is",
+      "examples": [
+        {
+          "src_text": "this is a sample source sentence.",
+          "tgt_text": "dies ist ein Beispiel im Zieltext."
+        }
+      ]
+    },
+    {
+      "fragment": "source",
+      "examples": [
+        {
+          "src_text": "this is a sample source sentence.",
+          "tgt_text": "dies ist ein Beispiel im Zieltext."
+        },
+        {
+          "src_text": "another example source sentence.",
+          "tgt_text": "noch ein Beispiel."
+        }
+      ]
+    }
+  ],
+  "num_words": 6,
+  "unknown": [
+    "The",
+    "of",
+    "unknown"
+  ]
+}
+```
+
 ## Testing 
 
 Run unit tests with:
