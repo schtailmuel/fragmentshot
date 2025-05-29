@@ -1,4 +1,4 @@
-# FragmentShot Retriever
+# 🧩 FragmentShot Retriever
 
 A Python package for retrieving exemplary translations for text based on fragments from parallel corpora.  
 
@@ -98,3 +98,18 @@ python -m unittest discover tests
 This project is licensed under the Creative Commons Attribution-ShareAlike 4.0 International License.
 
 Created by Samuel Frontull
+
+## Citation
+If you use this code in your research, please cite our paper (preprint):
+
+```bibtex
+@misc{frontull:stroehle:2025,
+      title={Compensating for Data with Reasoning: Low-Resource Machine Translation with LLMs}, 
+      author={Samuel Frontull and Thomas Ströhle},
+      year={2025},
+      eprint={2505.22293},
+      archivePrefix={arXiv},
+      primaryClass={cs.CL},
+      url={https://arxiv.org/abs/2505.22293}, 
+}
+```
