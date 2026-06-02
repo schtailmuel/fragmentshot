@@ -100,7 +100,7 @@ This project is licensed under the Creative Commons Attribution-ShareAlike 4.0 I
 Created by Samuel Frontull
 
 ## Citation
-If you use this code in your research, please cite our paper (preprint):
+If you use this code in your research, please cite our paper (LREC 2026):
 
 ```bibtex
 @inproceedings{frontull-etal-2026-every,
