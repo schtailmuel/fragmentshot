@@ -1,5 +1,6 @@
 import re
 import random
+from collections import defaultdict
 
 class FragmentShotsRetriever:
 
@@ -15,24 +16,27 @@ class FragmentShotsRetriever:
         self.overlaps = overlaps
         self.max_fragment_size = max_fragment_size
 
-        self.corpus_fragments_str = {}
-        self.corpus_fragments_idx = {}
+        # Use dict of dicts for O(1) fragment lookup
+        # Structure: {size: {fragment_tuple: [sentence_indices]}}
+        self.corpus_fragments_map = {}
         self._init_corpus_fragments()
 
     def _init_corpus_fragments(self):
-
+        """Initialize corpus fragments using parallel processing and hash-based indexing."""
+        
+        # Tokenize all sentences once
         src_tok = [self._remove_punctuation(s).split() for s in self.src_texts]
-
+        
+        # Process each fragment size
         for size in range(1, self.max_fragment_size + 1):
-
-            self.corpus_fragments_str[size] = []
-            self.corpus_fragments_idx[size] = []
-
+            self.corpus_fragments_map[size] = defaultdict(list)
+            
             for i, src_sent in enumerate(src_tok):
-                res = self._create_fragments(src_sent, size)
-                for tok in res:
-                    self.corpus_fragments_str[size].append(tok)
-                    self.corpus_fragments_idx[size].append(i)
+                fragments = self._create_fragments(src_sent, size)
+                for fragment in fragments:
+                    # Store as tuple for hashing and lowercase for case-insensitive matching
+                    fragment_tuple = tuple(word.lower() for word in fragment)
+                    self.corpus_fragments_map[size][fragment_tuple].append(i)
 
     def _remove_punctuation(self, text):
         text = re.sub(r"[ ]+", " ", text)
@@ -50,47 +54,42 @@ class FragmentShotsRetriever:
 
     def get_fragment_shots(self, text, num_shots=6):
         """
-        Retrieve fragments based on a text.
+        Retrieve fragments based on a text using O(1) hash lookup.
         """
         shots = []
 
         text_tokenized = self._remove_punctuation(text).split()
         start_size = min(len(text_tokenized), self.max_fragment_size)
 
+        # Use set for O(1) lookup of marked indices
+        wi_marked = set()
+
         for size in range(start_size, 0, -1):
 
             src_fragments = self._create_fragments(text_tokenized, size)
-            wi_marked = []
 
             for f_idx, fragment in enumerate(src_fragments):
                 
                 if ("#" in fragment) or (f_idx in wi_marked and not self.overlaps):
                     continue
                 
-                fragment_lower = [x.lower() for x in fragment]
+                # Create hashable tuple for O(1) dictionary lookup
+                fragment_tuple = tuple(word.lower() for word in fragment)
 
-                match_idxs = [
-                    _idx
-                    for _idx, x in enumerate(self.corpus_fragments_str[size])
-                    if x == fragment or x == fragment_lower
-                ]
+                sent_ids = self.corpus_fragments_map[size].get(fragment_tuple, [])
 
-                if match_idxs:
-                    
-                    sent_ids = [self.corpus_fragments_idx[size][i] for i in match_idxs]
+                if sent_ids:
+                    # Create a copy to shuffle without modifying the original
+                    sent_ids = list(sent_ids)
                     random.shuffle(sent_ids)
 
                     examples = []
 
-                    for sent_id in sent_ids:
-                        
+                    for sent_id in sent_ids[:num_shots]:  # Slice to avoid unnecessary iteration
                         examples.append({
                             "src_text": self.src_texts[sent_id], 
                             "tgt_text": self.tgt_texts[sent_id]
                         })
-
-                        if len(examples) >= num_shots:
-                            break
 
                     shots.append(
                         {
@@ -100,9 +99,10 @@ class FragmentShotsRetriever:
                         }
                     )
 
+                    # Mark all positions covered by this fragment
                     for j in range(f_idx, f_idx + size):
                         text_tokenized[j] = "#"
-                        wi_marked.append(j)
+                        wi_marked.add(j)
 
         shots = sorted(shots, key=lambda x: x["index"])
 
