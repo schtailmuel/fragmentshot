@@ -29,10 +29,12 @@ class TestFragmentShotsRetriever(unittest.TestCase):
     def test_fragment_initialization(self):
         retriever = FragmentShotsRetriever(self.src_texts, self.tgt_texts, max_fragment_size=3)
         
-        self.assertIn(3, retriever.corpus_fragments_str)
-        self.assertIn(3, retriever.corpus_fragments_idx)
-        self.assertTrue(len(retriever.corpus_fragments_str[3]) > 0)
-        self.assertEqual(len(retriever.corpus_fragments_str[3]), len(retriever.corpus_fragments_idx[3]))
+        self.assertIn(3, retriever.corpus_fragments_map)
+        self.assertTrue(len(retriever.corpus_fragments_map[3]) > 0)
+        # Verify the map contains tuples as keys and lists as values
+        for key, value in retriever.corpus_fragments_map[3].items():
+            self.assertIsInstance(key, tuple)
+            self.assertIsInstance(value, list)
 
     def test_retrieve(self):
         input_sentence = "The source of this is unknown."
