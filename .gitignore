@@ -18,3 +18,5 @@ pytest_cache/
 
 # Virtual environments
 .venv/
+tests/data
+fragmentshot/cli.py

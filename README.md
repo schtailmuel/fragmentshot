@@ -25,10 +25,10 @@ cd fragmentshot
 pip install -e .
 ```
 
-## Usage 
+## Usage
 
-```python 
-from fragmentshot.retriever import FragmentShotsRetriever
+```python
+from fragmentshot import FragmentShotRetriever
 
 src_texts = [
     "this is a sample source sentence.",
@@ -40,10 +40,114 @@ tgt_texts = [
     "noch ein Beispiel."
 ]
 
-retriever = FragmentShotsRetriever(src_texts, tgt_texts, max_fragment_size=5, overlaps=False)
+retriever = FragmentShotRetriever(max_fragment_size=5, overlaps=False)
+retriever.add_parallel_corpus(src_texts, tgt_texts)
 
-result = retriever.get_fragment_shots("The source of this is unknown.")
-print(result)
+response = retriever.search("The source of this is unknown.")
+
+for shot in response.shots:
+    print(f"Fragment: {shot.fragment}")
+    for example in shot.examples:
+        print(f"  -> {example.src} | {example.tgt}")
+```
+
+### Build -> Save -> Load (Large Corpora)
+
+```python
+from fragmentshot import Indexer, FragmentShotRetriever
+
+# Step 1: Build once (streams from files)
+indexer = Indexer(max_fragment_size=6, overlaps=False, mask_rules={"NUM": r"[0-9]+"})
+indexer.index_from_file(src_path="src.txt", tgt_path="tgt.txt", output_db="corpus.db")
+
+# Step 2: Fast retrieval from the saved SQLite index
+retriever = FragmentShotRetriever(
+    index_path="corpus.db",
+    max_fragment_size=6,
+    # optional: omitted because rules are loaded from index metadata
+    # mask_rules={"NUM": r"[0-9]+"},
+)
+result = retriever.search("the 14. of december was nice", max_examples_per_shot=5)
+```
+
+### Masking
+
+Masking is used as fallback. Retrieval first tries an exact fragment match, and if that fails it tries the masked fragment (for example replacing numbers with `[NUM]`). This keeps exact matches prioritized while preserving robust generalization.
+
+```python
+retriever = FragmentShotRetriever(
+    max_fragment_size=6,
+    mask_rules={
+        "NUM": r"[0-9]+",
+        "NAME": [r"Alice", r"Bob", r"Charlie"],
+    },
+)
+retriever.add_parallel_corpus(src_texts, tgt_texts)
+result = retriever.search("the 14. of december was nice")
+# When fallback is used, examples can include:
+# example.src_masked == "the [NUM] of december was nice"
+```
+
+### Batch Queries
+
+```python
+queries = ["Sentence one...", "Sentence two...", "Sentence three..."]
+
+for result in retriever.search_batch(queries, batch_size=1000, max_examples_per_shot=5):
+    print(result.shots)
+```
+
+### Retrieval Limits
+
+```python
+result = retriever.search(
+    "The source of this is unknown.",
+    max_examples_per_shot=5,
+)
+```
+
+Word boundaries are added automatically around each mask regex, so you do not need to include `\b` in your mask patterns.
+
+This allows query fragment `the 14 of december was nice` to match corpus fragment `the 12 of december was nice` without rewriting either fragment text.
+When using a saved SQLite index, mask rules are stored inside the index metadata. If you pass `mask_rules` at retrieval time, they must match the indexed definition.
+Each shot includes `fragment_masked` and `match_type` (`exact` or `masked_fallback`) to show what was searched.
+Each example may include `src_masked` and `tgt_masked` when masking changed the normalized text (those keys are omitted otherwise).
+
+### CLI
+
+Build an index once:
+
+```bash
+fragmentshot --src src.txt --tgt tgt.txt --build-index corpus.db --max-fragment-size 6
+```
+
+Build with masks:
+
+```bash
+fragmentshot --src src.txt --tgt tgt.txt --build-index corpus.db --max-fragment-size 6 --mask masks.json
+```
+
+Query from the index:
+
+```bash
+fragmentshot --index-path corpus.db --text "the 14. of december was nice" --max-fragment-size 6 --mask masks.json --log-level INFO
+```
+
+Legacy one-off mode (loads txt files directly):
+
+```bash
+fragmentshot --src src.txt --tgt tgt.txt --text "the 14. of december was nice" --max-fragment-size 6 --mask masks.json --log-level INFO
+```
+
+Logging is built in for index loading, index building progress, and search lifecycle. In library usage, configure Python logging for the `fragmentshot` logger to see these events.
+
+Mask file format (`masks.json`):
+
+```json
+{
+  "NUM": ["[0-9]+"],
+  "NAME": ["Alice", "Bob", "Charlie"]
+}
 ```
 
 **Result**
@@ -54,24 +158,28 @@ print(result)
     {
       "index": 1,
       "fragment": "source",
+      "fragment_masked": "source",
+      "match_type": "exact",
       "examples": [
         {
-          "src_text": "this is a sample source sentence.",
-          "tgt_text": "dies ist ein Beispiel im Zieltext."
+          "src": "this is a sample source sentence.",
+          "tgt": "dies ist ein Beispiel im Zieltext."
         },
         {
-          "src_text": "another example source sentence.",
-          "tgt_text": "noch ein Beispiel."
+          "src": "another example source sentence.",
+          "tgt": "noch ein Beispiel."
         }
       ]
     },
     {
       "index": 3,
       "fragment": "this is",
+      "fragment_masked": "this is",
+      "match_type": "exact",
       "examples": [
         {
-          "src_text": "this is a sample source sentence.",
-          "tgt_text": "dies ist ein Beispiel im Zieltext."
+          "src": "this is a sample source sentence.",
+          "tgt": "dies ist ein Beispiel im Zieltext."
         }
       ]
     }
@@ -84,6 +192,13 @@ print(result)
   ]
 }
 ```
+
+## Storage Model
+
+The SQLite index uses an inverted-index layout:
+
+- `fragments(variant, size, fragment) -> sentence_id` where `variant` is `raw` or `masked`
+- `sentences(id) -> (src, tgt)`
 
 ## Testing 
 
