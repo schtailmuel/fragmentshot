@@ -11,6 +11,7 @@ readme = "README.md"
 requires-python = ">=3.9"
 dependencies = []
 license = "CC-BY-SA-4.0"
+license-files = ["LICENSE"]
 keywords = ["machine-translation", "retrieval", "rag", "few-shot", "icl", "prompting"]
 classifiers = [
   "Development Status :: 4 - Beta",
@@ -18,7 +19,6 @@ classifiers = [
   "Intended Audience :: Developers",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
   "Topic :: Text Processing :: Linguistic",
-  "License :: OSI Approved :: Creative Commons Attribution-ShareAlike 4.0 International License (CC-BY-SA-4.0)",
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
@@ -44,6 +44,3 @@ dev = [
   "twine>=5.0",
   "ruff>=0.5",
 ]
-
-[tool.setuptools]
-license-files = ["LICENSE"]
