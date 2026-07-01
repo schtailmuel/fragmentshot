@@ -300,16 +300,17 @@ class Indexer:
             CREATE TABLE sentences (
                 id INTEGER PRIMARY KEY,
                 src TEXT NOT NULL,
-                tgt TEXT NOT NULL
+                tgt TEXT NOT NULL,
+                src_tokens TEXT,
+                src_tokens_masked TEXT
             )
             """
         )
         conn.execute(
             """
-            CREATE TABLE fragments (
+            CREATE TABLE word_index (
                 variant TEXT NOT NULL,
-                size INTEGER NOT NULL,
-                fragment TEXT NOT NULL,
+                word TEXT NOT NULL,
                 sentence_id INTEGER NOT NULL,
                 FOREIGN KEY(sentence_id) REFERENCES sentences(id)
             )
@@ -324,9 +325,9 @@ class Indexer:
             """
         )
         conn.execute(
-            "CREATE INDEX idx_fragments_variant_size_fragment ON fragments(variant, size, fragment)"
+            "CREATE INDEX idx_word_index_variant_word ON word_index(variant, word)"
         )
-        conn.execute("CREATE INDEX idx_fragments_sentence_id ON fragments(sentence_id)")
+        conn.execute("CREATE INDEX idx_word_index_sentence_id ON word_index(sentence_id)")
         self._log.debug("Database schema initialized at %s", db_path)
         return conn
 
@@ -338,16 +339,15 @@ class Indexer:
         conn = self._initialize_db(output_db)
         sentence_id = 0
         sentence_rows = []
-        fragment_rows = []
-        total_fragments_raw = 0
-        total_fragments_masked = 0
+        word_rows = []
+        total_words_raw = 0
+        total_words_masked = 0
         last_progress_at = started_at
 
         self._log.info(
-            "Indexing started: output_db=%s commit_every=%d max_fragment_size=%d mask_rule_patterns=%d",
+            "Indexing started (word-level): output_db=%s commit_every=%d mask_rule_patterns=%d",
             output_db,
             commit_every,
-            self.max_fragment_size,
             len(self.mask_rules),
         )
 
@@ -366,52 +366,65 @@ class Indexer:
 
             src = src.rstrip("\n")
             tgt = tgt.rstrip("\n")
-            sentence_rows.append((sentence_id, src, tgt))
-
+            
+            # Pre-tokenize and cache
             tokens_raw = _normalize_text(src).split()
-            for size in range(1, self.max_fragment_size + 1):
-                for fragment in _create_fragments(tokens_raw, size):
-                    fragment_rows.append(
-                        ("raw", size, " ".join(word.lower() for word in fragment), sentence_id)
-                    )
-                    total_fragments_raw += 1
-
+            tokens_raw_json = json.dumps(tokens_raw)
+            
+            tokens_masked = None
+            tokens_masked_json = None
             if self.mask_rules:
                 tokens_masked = _tokenize_with_masks(src, self.mask_rules)
-                for size in range(1, self.max_fragment_size + 1):
-                    for fragment in _create_fragments(tokens_masked, size):
-                        fragment_rows.append(
-                            ("masked", size, " ".join(word.lower() for word in fragment), sentence_id)
-                        )
-                        total_fragments_masked += 1
+                tokens_masked_json = json.dumps(tokens_masked)
+            
+            sentence_rows.append((sentence_id, src, tgt, tokens_raw_json, tokens_masked_json))
+
+            # Index unique words from raw normalized text
+            unique_words_raw = set(word.lower() for word in tokens_raw)
+            for word in unique_words_raw:
+                word_rows.append(("raw", word, sentence_id))
+                total_words_raw += 1
+
+            # Index unique words from masked text
+            if self.mask_rules and tokens_masked is not None:
+                unique_words_masked = set(word.lower() for word in tokens_masked)
+                for word in unique_words_masked:
+                    word_rows.append(("masked", word, sentence_id))
+                    total_words_masked += 1
 
             sentence_id += 1
 
             if len(sentence_rows) >= commit_every:
-                conn.executemany("INSERT INTO sentences(id, src, tgt) VALUES (?, ?, ?)", sentence_rows)
                 conn.executemany(
-                    "INSERT INTO fragments(variant, size, fragment, sentence_id) VALUES (?, ?, ?, ?)",
-                    fragment_rows,
+                    "INSERT INTO sentences(id, src, tgt, src_tokens, src_tokens_masked) VALUES (?, ?, ?, ?, ?)",
+                    sentence_rows
+                )
+                conn.executemany(
+                    "INSERT INTO word_index(variant, word, sentence_id) VALUES (?, ?, ?)",
+                    word_rows,
                 )
                 conn.commit()
                 sentence_rows = []
-                fragment_rows = []
+                word_rows = []
                 now = time.perf_counter()
                 if now - last_progress_at >= 5.0:
                     self._log.info(
-                        "Indexing progress: sentences=%d fragments_raw=%d fragments_masked=%d elapsed=%.1fs",
+                        "Indexing progress: sentences=%d words_raw=%d words_masked=%d elapsed=%.1fs",
                         sentence_id,
-                        total_fragments_raw,
-                        total_fragments_masked,
+                        total_words_raw,
+                        total_words_masked,
                         now - started_at,
                     )
                     last_progress_at = now
 
         if sentence_rows:
-            conn.executemany("INSERT INTO sentences(id, src, tgt) VALUES (?, ?, ?)", sentence_rows)
             conn.executemany(
-                "INSERT INTO fragments(variant, size, fragment, sentence_id) VALUES (?, ?, ?, ?)",
-                fragment_rows,
+                "INSERT INTO sentences(id, src, tgt, src_tokens, src_tokens_masked) VALUES (?, ?, ?, ?, ?)",
+                sentence_rows
+            )
+            conn.executemany(
+                "INSERT INTO word_index(variant, word, sentence_id) VALUES (?, ?, ?)",
+                word_rows,
             )
             conn.commit()
 
@@ -419,7 +432,7 @@ class Indexer:
         conn.executemany(
             "INSERT INTO meta(key, value) VALUES (?, ?)",
             [
-                ("schema_version", "3"),
+                ("schema_version", "4"),
                 ("max_fragment_size", str(self.max_fragment_size)),
                 ("overlaps", "1" if self.overlaps else "0"),
                 ("num_sentences", str(sentence_id)),
@@ -432,11 +445,11 @@ class Indexer:
         elapsed = time.perf_counter() - started_at
         rate = sentence_id / elapsed if elapsed > 0 else 0.0
         self._log.info(
-            "Indexing finished: output_db=%s sentences=%d fragments_raw=%d fragments_masked=%d elapsed=%.2fs rate=%.2f_sentences/s",
+            "Indexing finished: output_db=%s sentences=%d unique_words_raw=%d unique_words_masked=%d elapsed=%.2fs rate=%.2f_sentences/s",
             output_db,
             sentence_id,
-            total_fragments_raw,
-            total_fragments_masked,
+            total_words_raw,
+            total_words_masked,
             elapsed,
             rate,
         )
@@ -461,13 +474,19 @@ class _InMemoryBackend:
         self._log = logger or _BASE_LOGGER.getChild("backend.memory")
         self.src_texts = []
         self.tgt_texts = []
+        # Pre-tokenized caches
+        self.src_tokens_cache = []  # List of token lists
+        self.src_tokens_masked_cache = []  # List of masked token lists
+        # Word-level inverted index: {word: set(sentence_ids)}
+        self.raw_word_index = defaultdict(set)
+        self.masked_word_index = defaultdict(set)
+        # Legacy compatibility
         self.raw_fragments_map = {
             size: defaultdict(list) for size in range(1, self.max_fragment_size + 1)
         }
         self.masked_fragments_map = {
             size: defaultdict(list) for size in range(1, self.max_fragment_size + 1)
         }
-        # Backward-compatible alias.
         self.corpus_fragments_map = self.raw_fragments_map
 
     def add_parallel_corpus(self, src_texts, tgt_texts):
@@ -483,7 +502,16 @@ class _InMemoryBackend:
 
         for offset, src_text in enumerate(src_list):
             sentence_id = start_index + offset
+            
+            # Pre-tokenize and cache
             tokens_raw = _normalize_text(src_text).split()
+            self.src_tokens_cache.append(tokens_raw)
+            
+            # Build word-level index
+            for word in tokens_raw:
+                self.raw_word_index[word.lower()].add(sentence_id)
+            
+            # Build legacy fragment maps for backward compatibility
             for size in range(1, self.max_fragment_size + 1):
                 for fragment in _create_fragments(tokens_raw, size):
                     fragment_tuple = tuple(word.lower() for word in fragment)
@@ -491,10 +519,16 @@ class _InMemoryBackend:
 
             if self.mask_rules:
                 tokens_masked = _tokenize_with_masks(src_text, self.mask_rules)
+                self.src_tokens_masked_cache.append(tokens_masked)
+                for word in tokens_masked:
+                    self.masked_word_index[word.lower()].add(sentence_id)
+                
                 for size in range(1, self.max_fragment_size + 1):
                     for fragment in _create_fragments(tokens_masked, size):
                         fragment_tuple = tuple(word.lower() for word in fragment)
                         self.masked_fragments_map[size][fragment_tuple].append(sentence_id)
+            else:
+                self.src_tokens_masked_cache.append(None)
 
         self._log.info(
             "In-memory corpus updated: added_sentences=%d total_sentences=%d elapsed=%.2fs",
@@ -507,13 +541,49 @@ class _InMemoryBackend:
     def has_corpus(self):
         return bool(self.src_texts)
 
+    def get_candidate_sentence_ids_for_words(self, words, masked=False):
+        """Get sentence IDs that contain ALL specified words."""
+        word_index = self.masked_word_index if masked else self.raw_word_index
+        words_lower = [w.lower() for w in words]
+        
+        if not words_lower:
+            return []
+        
+        # Start with sentences containing the first word
+        candidates = set(word_index.get(words_lower[0], []))
+        
+        # Intersect with sentences containing each subsequent word
+        for word in words_lower[1:]:
+            candidates &= word_index.get(word, set())
+            if not candidates:  # Early exit if no matches
+                return []
+        
+        return list(candidates)
+
     def get_sentence_ids_for_fragment(self, size, fragment_words, masked=False):
+        """Legacy method using fragment maps."""
         map_ref = self.masked_fragments_map if masked else self.raw_fragments_map
         fragment_tuple = tuple(word.lower() for word in fragment_words)
         return list(map_ref[size].get(fragment_tuple, []))
 
     def get_sentence(self, sentence_id):
         return self.src_texts[sentence_id], self.tgt_texts[sentence_id]
+    
+    def get_sentences_bulk(self, sentence_ids):
+        """Fetch multiple sentences at once (optimized for in-memory)."""
+        return [(self.src_texts[sid], self.tgt_texts[sid]) for sid in sentence_ids]
+    
+    def get_tokens(self, sentence_id, masked=False):
+        """Get pre-tokenized version of a sentence."""
+        if masked and self.mask_rules:
+            return self.src_tokens_masked_cache[sentence_id]
+        return self.src_tokens_cache[sentence_id]
+    
+    def get_tokens_bulk(self, sentence_ids, masked=False):
+        """Fetch pre-tokenized versions of multiple sentences."""
+        if masked and self.mask_rules:
+            return [self.src_tokens_masked_cache[sid] for sid in sentence_ids]
+        return [self.src_tokens_cache[sid] for sid in sentence_ids]
 
 
 class _SQLiteBackend:
@@ -528,7 +598,7 @@ class _SQLiteBackend:
         self._log.info("Opening SQLite index at %s", self.index_path)
         self.conn = sqlite3.connect(str(self.index_path))
         self.conn.row_factory = sqlite3.Row
-        self._fragments_has_variant = self._detect_fragments_variant_column()
+        self._schema_type = self._detect_schema_version()
         self.max_fragment_size = self._load_meta_int("max_fragment_size")
 
         mask_rules_json = self._load_meta_value("mask_rules_json", "[]")
@@ -546,17 +616,30 @@ class _SQLiteBackend:
             "mask_rules_fingerprint", _mask_rules_fingerprint(self.mask_rules)
         )
         self._log.info(
-            "SQLite index loaded: path=%s max_fragment_size=%d mask_rule_patterns=%d variant_support=%s elapsed=%.2fs",
+            "SQLite index loaded: path=%s schema=%s max_fragment_size=%d mask_rule_patterns=%d elapsed=%.2fs",
             self.index_path,
+            self._schema_type,
             self.max_fragment_size,
             len(self.mask_rules),
-            self._fragments_has_variant,
             time.perf_counter() - started_at,
         )
 
-    def _detect_fragments_variant_column(self):
-        rows = self.conn.execute("PRAGMA table_info(fragments)").fetchall()
-        return any(row["name"] == "variant" for row in rows)
+    def _detect_schema_version(self):
+        """Detect whether this is a word-index (v4+) or fragment-index (v3-) schema."""
+        tables = self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+        table_names = {row["name"] for row in tables}
+        
+        if "word_index" in table_names:
+            return "word_index"
+        elif "fragments" in table_names:
+            # Check if fragments table has variant column
+            rows = self.conn.execute("PRAGMA table_info(fragments)").fetchall()
+            has_variant = any(row["name"] == "variant" for row in rows)
+            return "fragments_variant" if has_variant else "fragments_legacy"
+        else:
+            raise ValueError("Index database has unknown schema (no word_index or fragments table)")
 
     def _load_meta_value(self, key, default=None):
         row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
@@ -574,9 +657,46 @@ class _SQLiteBackend:
         row = self.conn.execute("SELECT COUNT(1) AS n FROM sentences").fetchone()
         return bool(row["n"])
 
+    def get_candidate_sentence_ids_for_words(self, words, masked=False):
+        """Get sentence IDs that contain ALL specified words (optimized for word_index schema)."""
+        if self._schema_type != "word_index":
+            # Fall back to slower method for old indices
+            return self._get_candidates_from_fragments(words, masked)
+        
+        words_lower = [w.lower() for w in words]
+        if not words_lower:
+            return []
+        
+        variant = "masked" if masked else "raw"
+        
+        # Build query with placeholders
+        placeholders = ",".join("?" for _ in words_lower)
+        query = f"""
+            SELECT sentence_id
+            FROM word_index
+            WHERE variant = ? AND word IN ({placeholders})
+            GROUP BY sentence_id
+            HAVING COUNT(DISTINCT word) = ?
+        """
+        
+        params = [variant] + words_lower + [len(words_lower)]
+        rows = self.conn.execute(query, params).fetchall()
+        return [row["sentence_id"] for row in rows]
+    
+    def _get_candidates_from_fragments(self, words, masked):
+        """Fallback for old fragment-based indices - slower but compatible."""
+        # For old indices, we can't efficiently filter by words,
+        # so we return empty and rely on the fragment lookup
+        return []
+
     def get_sentence_ids_for_fragment(self, size, fragment_words, masked=False):
+        """Legacy method for fragment-based lookup (used by old indices)."""
+        if self._schema_type == "word_index":
+            # New schema doesn't have pre-computed fragments
+            return []
+        
         fragment = " ".join(word.lower() for word in fragment_words)
-        if self._fragments_has_variant:
+        if self._schema_type == "fragments_variant":
             variant = "masked" if masked else "raw"
             rows = self.conn.execute(
                 "SELECT sentence_id FROM fragments WHERE variant = ? AND size = ? AND fragment = ?",
@@ -598,6 +718,58 @@ class _SQLiteBackend:
         if row is None:
             raise KeyError(f"Sentence id not found in index: {sentence_id}")
         return row["src"], row["tgt"]
+    
+    def get_sentences_bulk(self, sentence_ids):
+        """Fetch multiple sentences at once with a single query."""
+        if not sentence_ids:
+            return []
+        
+        placeholders = ",".join("?" for _ in sentence_ids)
+        query = f"SELECT id, src, tgt FROM sentences WHERE id IN ({placeholders}) ORDER BY id"
+        rows = self.conn.execute(query, sentence_ids).fetchall()
+        
+        # Build lookup dict and return in original order
+        sentence_dict = {row["id"]: (row["src"], row["tgt"]) for row in rows}
+        return [sentence_dict.get(sid, ("", "")) for sid in sentence_ids]
+    
+    def get_tokens(self, sentence_id, masked=False):
+        """Get pre-tokenized version of a sentence from cache."""
+        column = "src_tokens_masked" if masked else "src_tokens"
+        row = self.conn.execute(
+            f"SELECT {column} FROM sentences WHERE id = ?",
+            (sentence_id,),
+        ).fetchone()
+        
+        if row is None:
+            raise KeyError(f"Sentence id not found in index: {sentence_id}")
+        
+        tokens_json = row[column]
+        if tokens_json is None:
+            # Fallback for old indices or masked tokens when no mask rules
+            return None
+        
+        return json.loads(tokens_json)
+    
+    def get_tokens_bulk(self, sentence_ids, masked=False):
+        """Fetch pre-tokenized versions of multiple sentences."""
+        if not sentence_ids:
+            return []
+        
+        column = "src_tokens_masked" if masked else "src_tokens"
+        placeholders = ",".join("?" for _ in sentence_ids)
+        query = f"SELECT id, {column} FROM sentences WHERE id IN ({placeholders})"
+        rows = self.conn.execute(query, sentence_ids).fetchall()
+        
+        # Build lookup dict and return in original order
+        tokens_dict = {}
+        for row in rows:
+            tokens_json = row[column]
+            if tokens_json is not None:
+                tokens_dict[row["id"]] = json.loads(tokens_json)
+            else:
+                tokens_dict[row["id"]] = None
+        
+        return [tokens_dict.get(sid) for sid in sentence_ids]
 
     def close(self):
         if getattr(self, "conn", None) is not None:
@@ -733,7 +905,31 @@ class FragmentShotRetriever:
             return list(fragment_words)
         return _tokenize_with_masks(" ".join(fragment_words), self.mask_rules)
 
-    def search(self, text, num_shots=6, max_examples_per_shot=None):
+    def _verify_fragment_in_tokens(self, fragment_words, tokens):
+        """Fast verification that a fragment appears in pre-tokenized sentence."""
+        if tokens is None:
+            return False
+        
+        tokens_lower = [t.lower() for t in tokens]
+        fragment_lower = [w.lower() for w in fragment_words]
+        fragment_len = len(fragment_lower)
+        
+        # Sliding window check
+        for i in range(len(tokens_lower) - fragment_len + 1):
+            if tokens_lower[i:i + fragment_len] == fragment_lower:
+                return True
+        return False
+    
+    def _verify_fragment_in_sentence(self, fragment_words, sentence_text, masked=False):
+        """Fallback verification when tokens not available."""
+        if masked and self.mask_rules:
+            tokens = _tokenize_with_masks(sentence_text, self.mask_rules)
+        else:
+            tokens = _normalize_text(sentence_text).split()
+        
+        return self._verify_fragment_in_tokens(fragment_words, tokens)
+
+    def search(self, text, num_shots=6, max_examples_per_shot=None, max_fragment_size=None):
         started_at = time.perf_counter()
         if not self._backend.has_corpus():
             raise ValueError("No corpus has been indexed yet. Call add_parallel_corpus or use index_path.")
@@ -741,18 +937,26 @@ class FragmentShotRetriever:
         per_shot = max_examples_per_shot if max_examples_per_shot is not None else num_shots
         if per_shot < 1:
             raise ValueError("max_examples_per_shot must be at least 1.")
+        
+        # Allow override at query time (respects index limit for old indices)
+        effective_max_fragment_size = max_fragment_size if max_fragment_size is not None else self.max_fragment_size
+        if self._backend.kind == "sqlite":
+            # Old fragment-based indices can't exceed their indexed max
+            if hasattr(self._backend, '_schema_type') and self._backend._schema_type != "word_index":
+                effective_max_fragment_size = min(effective_max_fragment_size, self._backend.max_fragment_size)
 
         self._log.info(
-            "Search started: query_chars=%d num_shots=%d max_examples_per_shot=%d backend=%s",
+            "Search started: query_chars=%d num_shots=%d max_examples_per_shot=%d max_fragment_size=%d backend=%s",
             len(text),
             num_shots,
             per_shot,
+            effective_max_fragment_size,
             self._backend.kind,
         )
 
         shots = []
         query_tokens = _normalize_text(text).split()
-        start_size = min(len(query_tokens), self.max_fragment_size)
+        start_size = min(len(query_tokens), effective_max_fragment_size)
         wi_marked = set()
 
         for size in range(start_size, 0, -1):
@@ -763,16 +967,56 @@ class FragmentShotRetriever:
                     continue
 
                 masked_fragment = self._mask_fragment_words(raw_fragment)
-                sent_ids = self._backend.get_sentence_ids_for_fragment(
-                    size, raw_fragment, masked=False
+                
+                # Try to get candidates containing all words in the fragment
+                sent_ids = self._backend.get_candidate_sentence_ids_for_words(
+                    raw_fragment, masked=False
                 )
+                
+                # Verify that candidates actually contain the exact n-gram (batch fetch)
+                if sent_ids:
+                    # Check if backend supports bulk token fetching
+                    if hasattr(self._backend, 'get_tokens_bulk'):
+                        tokens_bulk = self._backend.get_tokens_bulk(sent_ids, masked=False)
+                        verified_ids = [
+                            sent_id for sent_id, tokens in zip(sent_ids, tokens_bulk)
+                            if tokens is not None and self._verify_fragment_in_tokens(raw_fragment, tokens)
+                        ]
+                    else:
+                        # Fallback to individual fetches
+                        verified_ids = []
+                        for sent_id in sent_ids:
+                            tokens = self._backend.get_tokens(sent_id, masked=False)
+                            if tokens is not None and self._verify_fragment_in_tokens(raw_fragment, tokens):
+                                verified_ids.append(sent_id)
+                    sent_ids = verified_ids
+                
                 match_type = "exact"
+                
+                # Try masked fallback if no exact matches
                 if not sent_ids and self.mask_rules and masked_fragment:
-                    sent_ids = self._backend.get_sentence_ids_for_fragment(
-                        len(masked_fragment), masked_fragment, masked=True
+                    sent_ids = self._backend.get_candidate_sentence_ids_for_words(
+                        masked_fragment, masked=True
                     )
+                    
                     if sent_ids:
-                        match_type = "masked_fallback"
+                        # Batch verify masked tokens
+                        if hasattr(self._backend, 'get_tokens_bulk'):
+                            tokens_bulk = self._backend.get_tokens_bulk(sent_ids, masked=True)
+                            verified_ids = [
+                                sent_id for sent_id, tokens in zip(sent_ids, tokens_bulk)
+                                if tokens is not None and self._verify_fragment_in_tokens(masked_fragment, tokens)
+                            ]
+                        else:
+                            verified_ids = []
+                            for sent_id in sent_ids:
+                                tokens = self._backend.get_tokens(sent_id, masked=True)
+                                if tokens is not None and self._verify_fragment_in_tokens(masked_fragment, tokens):
+                                    verified_ids.append(sent_id)
+                        sent_ids = verified_ids
+                        
+                        if sent_ids:
+                            match_type = "masked_fallback"
 
                 if sent_ids:
                     shots.append(
@@ -809,15 +1053,17 @@ class FragmentShotRetriever:
         batch_size=1000,
         num_shots=6,
         max_examples_per_shot=None,
+        max_fragment_size=None,
     ) -> Iterator[FragmentSearchResult]:
         if batch_size < 1:
             raise ValueError("batch_size must be at least 1.")
 
         self._log.info(
-            "Batch search started: batch_size=%d num_shots=%d max_examples_per_shot=%s",
+            "Batch search started: batch_size=%d num_shots=%d max_examples_per_shot=%s max_fragment_size=%s",
             batch_size,
             num_shots,
             "auto" if max_examples_per_shot is None else max_examples_per_shot,
+            "default" if max_fragment_size is None else max_fragment_size,
         )
         batch = []
         yielded = 0
@@ -830,6 +1076,7 @@ class FragmentShotRetriever:
                         item,
                         num_shots=num_shots,
                         max_examples_per_shot=max_examples_per_shot,
+                        max_fragment_size=max_fragment_size,
                     )
                 batch = []
                 self._log.info("Batch search progress: yielded_results=%d", yielded)
@@ -840,11 +1087,12 @@ class FragmentShotRetriever:
                 item,
                 num_shots=num_shots,
                 max_examples_per_shot=max_examples_per_shot,
+                max_fragment_size=max_fragment_size,
             )
         self._log.info("Batch search finished: yielded_results=%d", yielded)
 
-    def get_fragment_shots(self, text, num_shots=6):
-        return self.search(text, num_shots=num_shots).to_legacy_dict()
+    def get_fragment_shots(self, text, num_shots=6, max_fragment_size=None):
+        return self.search(text, num_shots=num_shots, max_fragment_size=max_fragment_size).to_legacy_dict()
 
     def close(self):
         if self._backend.kind == "sqlite":

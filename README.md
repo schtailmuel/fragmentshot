@@ -63,11 +63,15 @@ indexer.index_from_file(src_path="src.txt", tgt_path="tgt.txt", output_db="corpu
 # Step 2: Fast retrieval from the saved SQLite index
 retriever = FragmentShotRetriever(
     index_path="corpus.db",
-    max_fragment_size=6,
+    max_fragment_size=6,  # Default for queries (can be overridden)
     # optional: omitted because rules are loaded from index metadata
     # mask_rules={"NUM": r"[0-9]+"},
 )
-result = retriever.search("the 14. of december was nice", max_examples_per_shot=5)
+result = retriever.search(
+    "the 14. of december was nice", 
+    max_examples_per_shot=5,
+    max_fragment_size=8,  # Optional: override the default
+)
 ```
 
 ### Masking
@@ -93,20 +97,41 @@ result = retriever.search("the 14. of december was nice")
 ```python
 queries = ["Sentence one...", "Sentence two...", "Sentence three..."]
 
-for result in retriever.search_batch(queries, batch_size=1000, max_examples_per_shot=5):
+for result in retriever.search_batch(
+    queries, 
+    batch_size=1000, 
+    max_examples_per_shot=5,
+    max_fragment_size=6,  # Optional: override at query time
+):
     print(result.shots)
 ```
 
-### Retrieval Limits
+### Retrieval Parameters
 
 ```python
 result = retriever.search(
     "The source of this is unknown.",
-    max_examples_per_shot=5,
+    max_examples_per_shot=5,        # Limit examples per shot
+    max_fragment_size=8,            # Override at query time (optional)
 )
 ```
 
-Word boundaries are added automatically around each mask regex, so you do not need to include `\b` in your mask patterns.
+The `max_fragment_size` parameter can now be specified at query time, allowing you to experiment with different fragment sizes without rebuilding the index:
+
+```python
+retriever = FragmentShotRetriever(index_path="corpus.db")
+
+# Use instance default
+result = retriever.search("some text")
+
+# Try shorter fragments (faster, broader matches)
+result = retriever.search("some text", max_fragment_size=4)
+
+# Try longer fragments (slower, more specific matches)
+result = retriever.search("some text", max_fragment_size=8)
+```
+
+**Note:** Word boundaries are added automatically around each mask regex, so you do not need to include `\b` in your mask patterns.
 
 This allows query fragment `the 14 of december was nice` to match corpus fragment `the 12 of december was nice` without rewriting either fragment text.
 When using a saved SQLite index, mask rules are stored inside the index metadata. If you pass `mask_rules` at retrieval time, they must match the indexed definition.
@@ -195,10 +220,17 @@ Mask file format (`masks.json`):
 
 ## Storage Model
 
-The SQLite index uses an inverted-index layout:
+The SQLite index uses a word-level inverted-index layout (schema v4):
 
-- `fragments(variant, size, fragment) -> sentence_id` where `variant` is `raw` or `masked`
-- `sentences(id) -> (src, tgt)`
+- `word_index(variant, word) -> sentence_id` where `variant` is `raw` or `masked`
+- `sentences(id) -> (src, tgt, src_tokens, src_tokens_masked)` where tokens are pre-tokenized and stored as JSON arrays
+
+This design enables:
+- **Fast indexing:** Only unique words are stored (~2-5M) instead of all n-grams (~42M)
+- **Fast retrieval:** Word filtering + on-demand n-gram verification with batch token fetching
+- **Query-time flexibility:** `max_fragment_size` can be adjusted per query without reindexing
+
+**Legacy schema (v3):** Old indices use `fragments(variant, size, fragment) -> sentence_id` with precomputed n-grams. These are automatically detected and still supported for backward compatibility.
 
 ## Testing 
 

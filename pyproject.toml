@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fragmentshot"
-version = "2.0.0"
-description = "Fragment-based retrieval for MT prompting with SQLite indexing, exact-first lookup, and masked fallback."
+version = "3.0.0"
+description = "Fast fragment-based retrieval for MT prompting with word-level inverted index, query-time fragment sizing, and masked fallback."
 authors = [{ name = "Samuel Frontull", email = "samuel.frontull@uibk.ac.at" }]
 readme = "README.md"
 requires-python = ">=3.9"
